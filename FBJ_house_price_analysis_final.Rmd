@@ -1,0 +1,370 @@
+---
+title: "housing_csv"
+output: pdf_document
+date: "2023-10-29"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(tidyverse)
+library('TTR')
+library(tseries)
+library("MASS")
+library(forecast) 
+library(knitr)
+```
+
+```{r}
+# import the dataset
+sales <- read_csv("Data/raw_sales.csv")
+sales$datesold <- as.character(sales$datesold)
+sales$datesold <- as.Date(sales$datesold, format = "%Y-%m-%d")
+head(sales)
+```
+```{r}
+nrow(sales)
+```
+
+
+```{r}
+# obtain the summary statistics for this dataset
+
+summary(sales)
+
+```
+
+
+
+```{r}
+
+sales_monthly <- sales %>%
+  group_by(Month = format(datesold, "%Y-%m")) %>%
+  summarise(Total = sum(price))
+ts_price_2 <- ts(sales_monthly$Total, frequency = 12, start = c(2007, 2 ), 
+               end = c(2019, 7))
+ts_componenets_2 <- decompose(ts_price_2)
+
+plot(ts_componenets_2)
+```
+## Data Source
+The data is from Kaggle, it can be seen here https://www.kaggle.com/datasets/htagholdings/property-sales/?select=raw_sales.csv. This model could be used to forecast the prices of certain houses depeneding on the area and size, it could also be used to determine which months are the most profitable to sell a house. 
+
+
+## Discussion
+
+From this dataset we can see that when group by the monthly there is a clear indication of when homes were sold. If we look at seaonality, we we get closer to the start of a new year there is a major drop is homes sold. This makes sense because most people do not want to move in the colder weather especially if there is snow on the ground, also the holidays are around that time so people have to prepare for that. We can see it shoot up back around February-March and in some states it is warmer than others. The highest point would mot likely indicate the summer season, the weather is perfect and a prime time to buy houses. If we look at the trend the price over the 10 years has gradually increased, this makes sense with inflation. The original or level plot looks to take into consideration the different spikes and drops in the housing market. The noise also seems to have a mean o 0 and flotations up and won around that mark.
+
+This data grouped monthly would be great to forecast out a few months. The data is originally set to be daily but there are prolly missing dates and if foretasted out monthly that would give a good indicator of the total price spent that month. This could then be used to drive analysis on which months are better for selling homes and which months the price is drived up more than others. 
+
+```{r}
+acf_values<-acf(ts_price_2, plot = FALSE)
+
+# Create a dataframe from the PACF values for plotting
+acf_df <- data.frame(Lag = seq_along(acf_values$acf) - 1, ACF = acf_values$acf)
+
+# Use ggplot2 to create a clearer PACF plot
+ggplot(acf_df, aes(x = Lag, y = ACF)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_col(fill="grey", width=0.7) +  # changed from geom_bar to geom_col
+  geom_hline(yintercept = c(0.05, -0.05), linetype = "dashed", color = "blue") +
+  labs(title = "ACF of Monthly Sales", x = "Lag", y = "ACF") +
+  theme_minimal()
+```
+Since the bars are all above the blue line which represents the 95% confidence interval this indicates that the previous months sales do have a 
+relationship in the future months sales. We can also see that the bars decline as the lag get bigger. This suggests that the relationship between the sales data decreases at the lags increase. Seasonality in the data does not seem to be present when looking at this plot, we might see a specific increase or decrease in certain lags if seasonality was present, however can can also check the PACF plot as well. Since there is a significant auto correlation between the lags, an ARIMA model might be a good start for forecast this sales data.
+
+
+
+
+```{r}
+# Now generate the PACF plot
+pacf_values <- pacf(ts_price_2, plot = FALSE)
+# Create a dataframe from the PACF values for plotting
+pacf_df <- data.frame(Lag = seq_along(pacf_values$acf) - 1, PACF = pacf_values$acf)
+
+# Use ggplot2 to create a clearer PACF plot
+ggplot(pacf_df, aes(x = Lag, y = PACF)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_bar(stat = "identity") +
+  geom_hline(yintercept = c(0.05, -0.05), linetype = "dashed", color = "blue") +
+  labs(title = "PACF of Monthly Sales", x = "Lag", y = "Partial ACF") +
+  theme_minimal()
+
+```
+We can see lag 0, 2, 4 and 11 all have a positive partial autocorrelation, while points 9 and 12 have a negative partial auto correlation. There are a few lags that are beyond the first few that seem to be statistically significant, however given the auto correlation plot above it might be best to try a few lags between 1-4. The auto correlation plot above had a decline as the lags got bigger so if we try to use a lag that is larger we may not obtain the best results. 
+
+```{r}
+# Perform the Augmented Dickey-Fuller test
+adf_result <- adf.test(ts_price_2)
+
+# Print the test results
+print(adf_result)
+
+```
+Given that the p-value is greater than .05 we can conclude that our data is not stationary, we will need to perfom a diff if we decide to use an ARMA or ARIMA model. Possibly others but not sure as of now.
+
+
+
+```{r}
+correlation_coefficient <- cor(sales$price, sales$bedrooms)
+
+# Print the result
+print(correlation_coefficient)
+```
+
+
+
+Given the scatter plot above we can see that there is a positive correlation between price and bedrooms, this makes sense since typically the more bedrooms the larger the house and the more expensive they are. However, given the area that you live in, a smaller house could be just as expensive as a bigger house in another state ex Alabama vs California.
+
+```{r}
+ggplot(sales, aes(x = propertyType)) + 
+  geom_bar() +
+  labs(title = "Count of Property Type", 
+       x = "propertyType", 
+       y = "Count") +
+  theme_minimal()
+```
+Understanding the type of property is important when trying to understand the price. Houses might be worth more than units and vis versa given the size of each. In the data we can see that the majority of the properties that were sold were houses over units. 
+
+
+
+```{r}
+x_min <- min(sales_monthly$Total)
+x_max <-max(sales_monthly$Total)
+ggplot(sales_monthly, aes(x = Total)) + 
+  geom_histogram(color = "black", fill = "blue") +
+  scale_x_continuous(limits = c(x_min, x_max))+
+  labs(title = "Histogram of Data", x = "Prices", y = "Frequency") +
+  theme_minimal()
+```
+This histogram represents the price of house sold. We can see that this has a tail to the right suggesting there are ore homes that sold for lower prices that homes thats sold for more expensive prices. It also is a good indicator that when we make predictions our modle may have a harder time predicting more expensive homes since the data is skewed.
+
+
+```{r}
+correlation_coefficient <- cor(sales$price, sales$bedrooms)
+sales$bedrooms <- as.factor(sales$bedrooms)
+example_x <- as.Date("2007-01-01")  # replace with an actual date from your data
+example_y <- max(sales$price) * 0.9  
+p <- ggplot(sales, aes(datesold, price, colour =  bedrooms)) +
+  geom_point() +
+  scale_x_date(date_labels = '%Y') +
+  ggtitle('Year Sold by Bedrooms') +
+  xlab('Year Sold') 
+# p + scale_colour_manual(values = c('1' = 'blue', '2' = 'green', '3' = 'purple', '4' = 'orange', '5' = 'yellow'))
+
+# Add a custom annotation
+p + annotate("text", x = example_x, y = example_y, 
+             label = paste("Correlation Coefficient:", round(correlation_coefficient, 2)), 
+             hjust = .001, vjust = .1, color = "red")
+```
+
+
+
+```{r}
+ggplot(data = sales ,aes(x = datesold, y=price/1000)) +
+  geom_line(color = 'red') +
+  xlab('Year') +
+  ylab ('Price in K')+
+  ggtitle('House Prices over time') +
+  scale_x_date(date_labels = '%Y', breaks = '2 year') +
+  theme(axis.text.x = element_text(angle = 90,hjust = 1))
+```
+
+```{r}
+# Bedroom Colors
+bedroom_colors <- c("red", "blue", "green", "purple", "orange", "yellow")
+# Boxplots
+ggplot(sales, aes(x = price, y = bedrooms, fill = bedrooms)) + geom_boxplot() + scale_fill_manual(values = bedroom_colors) + labs(title = "Price vs. Bedrooms", x = "Price", y = "Bedrooms") +
+  theme_minimal() + theme(legend.position = "bottom") + coord_flip()
+```
+
+
+```{r}
+ggplot(sales, aes(x = price)) + geom_density(fill = "green", color = "black") + labs(title = "Price Kernel Density Plot", x = "Price", y = "Density")
+```
+
+
+```{r}
+ggplot(sales, aes(x = price, fill = bedrooms)) + geom_density(alpha = 0.7) + labs(title = "Bedroom Count Kernel Density", x = "Price", y = "Density") + scale_fill_brewer(palette = "Set1") + xlim(c(0, 1500000))
+```
+
+```{r}
+#transform the price column to try and get a normal distribution using boxcox transformation
+bc_transform <- boxcox(Total ~ 1, data = sales_monthly, lambda = seq(0, 2, by = 0.1))
+optimal_lambda <- bc_transform$x[which.max(bc_transform$y)]
+
+# Applying the Box-Cox Transformation with the optimal lambda
+sales_monthly$Transformed_Total <- BoxCox(sales_monthly$Total, lambda = optimal_lambda)
+hist(sales_monthly$Transformed_Total)
+```
+### The plot above displays the log-likelihood values associated with various lambda parameters for a Box-Cox transformation. The optimal value of lambda is identified at the peak of the curve, which appears to be just above 0.5. This specific lambda value corresponds to the highest log-likelihood, suggesting that it is the most suitable parameter for transforming the data to approximate a normal distribution closely. Additionally, the plot delineates a 95% confidence interval for the optimal lambda value. The range of lambda values within this confidence interval represents the range in which the true value of the optimal lambda is likely to fall with 95% certainty, ensuring the reliability of the transformation.
+
+```{r}
+# make the month column a data time 
+sales_monthly$Month <- as.Date(paste0(sales_monthly$Month, "-01"))
+ts_price_box_cox <- ts(sales_monthly$Transformed_Total, frequency = 12, start = c(2007, 2 ), 
+               end = c(2019, 7))
+decomp_2 <- decompose(ts_price_box_cox)
+# Extract the seasonally adjusted component as a time series
+seasonally_adjusted_ts <- ts(decomp_2$x - decomp_2$seasonal, frequency = 12, start = c(2007, 2))
+
+# Create the seasonal naive forecast
+snaive_forecast <- snaive(seasonally_adjusted_ts)
+
+# Plot the seasonal naive forecast
+plot(snaive_forecast)
+```
+```{r}
+sales_monthly_3 <- sales_monthly[, c("Month", "Transformed_Total")]
+sales_monthly_diff <- diff(sales_monthly_3$Transformed_Total, differences = 1)
+new_ts <- ts(sales_monthly_diff, frequency = 12, start = c(2007, 2 ), 
+               end = c(2019, 7))
+```
+
+```{r}
+# bring the original time series variable down and forecast of that
+# diff_ts_price_2 <- diff(ts_price_2, differences = 1)
+
+# Now, creating the training and validation windows with the differenced data
+train_window <- window(ts_price_box_cox, end = c(2018, 7))
+valid_window <- window(ts_price_box_cox, start = c(2018, 8))
+# build out LR model
+lr_train <- tslm(train_window ~ season + trend)
+lr_pred <- forecast(lr_train, h = 12, level = 0)
+plot(lr_pred, xlab = "Date", ylab = 'Sales Price')
+axis(1, at = seq(2007, 2019, 1), labels = format(seq(2007, 2019, 1))) 
+lines(lr_pred$fitted, lwd = 2, col = 'blue')
+lines(forecast(lr_train, h = length(valid_window))$mean, col = 'green', lwd = 2) 
+# Pred 
+lines(valid_window, col = 'red')
+# Adding a legend
+legend("topleft", # Position of the legend
+  legend = c("Fitted", "Forecast", "Actual"), # Text in the legend 
+  col = c("blue", "green", "red"), # Colors
+  lwd = 2, # Line widths
+  cex = 0.8) # Size of the text in the legend
+```
+```{r}
+# obtain accuracy scores
+kable(accuracy(lr_pred, valid_window))
+```
+
+
+```{r}
+# bring the original time series variable down and forecast of that
+diff_ts_price_2 <- diff(ts_price_box_cox, differences = 2)
+
+# Now, creating the training and validation windows with the differenced data
+train_window_2 <- window(new_ts, end = c(2018, 7))
+valid_window_2 <- window(new_ts, start = c(2018, 8))
+# build out LR model
+lr_train_2 <- tslm(train_window_2 ~ trend + season)
+lr_pred_2 <- forecast(lr_train_2, h = 12, level = 0)
+plot(lr_pred, xlab = "Date", ylab = 'Sales Price')
+axis(1, at = seq(2007, 2019, 1), labels = format(seq(2007, 2019, 1))) 
+lines(lr_pred_2$fitted, lwd = 2, col = 'blue')
+lines(forecast(lr_train_2, h = length(valid_window_2))$mean, col = 'green', lwd = 2) 
+# Pred 
+lines(valid_window_2, col = 'red')
+# Adding a legend
+legend("topleft", # Position of the legend
+  legend = c("Fitted", "Forecast", "Actual"), # Text in the legend 
+  col = c("blue", "green", "red"), # Colors
+  lwd = 2, # Line widths
+  cex = 0.8) # Size of the text in the legend
+```
+
+```{r}
+# obtain accruacy scores
+kable(accuracy(lr_pred_2, valid_window_2))
+```
+
+```{r}
+# Plot residuals
+residuals <- resid(lr_train)
+par(new=TRUE)
+plot(residuals, type="l", col="purple", lwd=2, ylab="Residuals", xlab="Date")
+```
+
+```{r}
+kable(accuracy(lr_pred_2, valid_window_2))
+
+```
+
+```{r}
+# daily forecast with ARIMA
+sales_ts <- ts(sales$price, start=c(2007,2), end=c(2019,7), frequency=365)
+autoplot(sales_ts)
+train_data <- window(sales_ts, start=start(sales_ts), end=c(2018,7))
+test_data <- window(sales_ts, start=c(2018,8))
+model_arima <- stlm(train_data, s.window=365, method = c("arima"))
+plot(train_data, ylab = "amount", xlim=c())
+lines(model_arima$fitted, lty=2, col="blue")
+arima_forecast <- forecast(model_arima, h=365)
+accuracy(arima_forecast, test_data)
+```
+
+```{r}
+# HOLT winters model
+SalesForecast <- HoltWinters(sales_ts, beta=FALSE, gamma=FALSE)
+HW1 <- HoltWinters(train_data)
+HW2 <- HoltWinters(train_data, alpha=0.2, gamma=0.1)
+ plot(sales_ts, ylab="", xlim=c(2007,2019))
+lines(HW1$fitted[,1], lty=2, col="blue")
+lines(HW2$fitted[,1], lty=2, col="red")
+HW1.pred <- predict(HW1, 24, prediction.interval = TRUE, level=0.95)
+plot(train_data, ylab="", xlim=c(2008, 2018))
+lines(HW1$fitted[,1], lty=2, col="blue")
+lines(HW1.pred[,1], col="red")
+lines(HW1.pred[,2], lty=2, col="orange")
+lines(HW1.pred[,3], lty=2, col="orange")
+HW1_for <- forecast(HW1, h=24, level=c(80,95)) #visualize our predictions:
+plot(HW1_for, xlim=c(2008.5, 2018)) 
+lines(HW1_for$fitted, lty=2, col="purple")
+accuracy(HW1_for, test_data)
+```
+```{r}
+#Neural Network for sales
+library(nnfor)
+# Convert to Date format
+sales$datesold <- as.Date(sales$datesold, format="%m/%d/%Y %H:%M")
+# Create time series from the sales data
+sales_ts_nn <- ts(sales$price, frequency = 12, start = c(2007, 2), end = c(2019,2))
+# Split the data into training and validation sets
+train.ts <- window(sales_ts_nn, end = c(2018, 12))
+valid.ts <- window(sales_ts_nn, start = c(2019, 1))
+# Set Seed
+set.seed(52)
+# Create neural network model
+sales.nnetar <- nnetar(train.ts, repeats = 20, p = 11, P = 1, size = 7)
+# Model Summary
+summary(sales.nnetar$model[[1]])
+# Predict on Validation Set
+sales.nnetar.pred <- forecast(sales.nnetar, h = 24)
+# Calculate Accuracy Metrics
+accuracy(sales.nnetar.pred, valid.ts)
+# Plot Results
+plot(train.ts, ylim = c(0, 1500000), ylab = "Price", xlab = "Time")
+axis(1, at = seq(2007, 2021, 1), labels = format(seq(2007, 2021, 1)))
+lines(sales.nnetar.pred$fitted, lwd = 2, col = "blue")
+lines(sales.nnetar.pred$mean, lwd = 2, col = "green", lty = 2)
+lines(valid.ts, lwd = 2, col = "red")
+# Legend
+legend("topright", legend = c("Fitted Values", "Forecast", "Validation Set"), col = c("blue", "green", "red"), lty = c(1, 2, 1), lwd = 2)
+```
+
+
+
+
+
+
+
+
+
+
+
+
